@@ -1,0 +1,13 @@
+{
+  "task_kind": "new-document",
+  "output": "pdf",
+  "signals": ["abnt", "academic-report"],
+  "hard_constraints": ["Português brasileiro", "estrutura acadêmica completa", "capa", "folha de rosto", "resumo", "sumário", "referências"],
+  "content_features": {
+    "code_blocks": 8,
+    "defined_terms": 18,
+    "portrait_images": 0,
+    "tables": 6,
+    "appendices": 2
+  }
+}

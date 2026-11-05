@@ -18,10 +18,12 @@
     pendingDirectAttachment: null,
     currentUserTab: 'catalog',
     adminTab: 'overview',
+    preferences: STORAGE.readPreferences(),
     liveTimer: null,
+    liveSyncFailures: 0,
+    liveVisibilityHandler: null,
     knownNotificationIds: new Set()
   };
-  let adminWriteInFlight = false;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -37,25 +39,10 @@
   }
 
   function findLab(id) { return state.labs.find((lab) => lab.id === id) || null; }
-  function labDisplayName(lab) {
-    if (!lab?.name) return 'Laboratório não encontrado';
-    const name = String(lab.name).trim();
-    const suffix = name.match(/\s*[·-]\s*Sala\s+(.+)$/i);
-    return suffix && String(lab.room || '').trim() && suffix[1].trim() === String(lab.room).trim() ? name.slice(0, suffix.index).trim() : name;
-  }
   function findAsset(id) { return state.assets.find((asset) => asset.id === id) || null; }
   function findTicket(id) { return state.tickets.find((ticket) => ticket.id === id) || null; }
 
-  function applyRemoteState(remote) {
-    state.profiles = remote.profiles;
-    state.labs = remote.labs;
-    state.assets = remote.assets;
-    state.tickets = remote.tickets;
-    state.directMessages = remote.directMessages || [];
-    state.notifications = remote.notifications || [];
-  }
-
-  function persist(next, options = {}) {
+  function persist(next) {
     const payload = {
       ...next,
       profiles: next.profiles || state.profiles,
@@ -65,52 +52,17 @@
       directMessages: next.directMessages || state.directMessages || [],
       notifications: next.notifications || state.notifications || []
     };
-    if (!STORAGE.saveCollections(payload, options)) {
+    if (!STORAGE.saveCollections(payload)) {
       showToast('Não foi possível salvar. O armazenamento local pode estar cheio; reduza o tamanho das imagens ou remova dados antigos.', 'error');
       return false;
     }
-    state.profiles = payload.profiles.map((profile) => ({ ...profile, password: '__remote__' }));
+    state.profiles = payload.profiles;
     state.labs = payload.labs;
     state.assets = payload.assets;
     state.tickets = payload.tickets;
     state.directMessages = payload.directMessages;
     state.notifications = payload.notifications || state.notifications || [];
     return true;
-  }
-
-  async function persistAdminChange(next) {
-    if (adminWriteInFlight) {
-      showToast('Aguarde a confirmação da gravação anterior no banco.', 'warning');
-      return false;
-    }
-    adminWriteInFlight = true;
-    const previous = {
-      profiles: state.profiles,
-      labs: state.labs,
-      assets: state.assets,
-      tickets: state.tickets,
-      directMessages: state.directMessages,
-      notifications: state.notifications
-    };
-    try {
-      if (!persist(next, { notifyRemoteFailure: false })) return false;
-      if (await STORAGE.flushRemote()) return true;
-      const fresh = await STORAGE.loadRemote();
-      applyRemoteState(fresh || previous);
-      STORAGE.syncLocalCache(fresh || previous);
-      renderPortal();
-      showToast('Não foi possível confirmar a gravação no banco. Confira os dados antes de tentar novamente.', 'error');
-      return false;
-    } catch (_error) {
-      const fresh = await STORAGE.loadRemote();
-      applyRemoteState(fresh || previous);
-      STORAGE.syncLocalCache(fresh || previous);
-      renderPortal();
-      showToast('O banco não confirmou a alteração. Confira a conexão e os dados antes de tentar novamente.', 'error');
-      return false;
-    } finally {
-      adminWriteInFlight = false;
-    }
   }
 
   function refreshNotificationBadge() {
@@ -195,6 +147,15 @@
     }, 3600);
   }
 
+  function setLiveSyncStatus(status, label) {
+    const indicator = $('#liveSyncStatus');
+    if (!indicator) return;
+    indicator.dataset.state = status;
+    const text = indicator.querySelector('span');
+    if (text) text.textContent = label;
+    indicator.title = status === 'online' ? 'Dados sincronizados com o servidor' : status === 'retrying' ? 'Tentando reconectar ao servidor' : 'A sincronização será iniciada ao entrar no portal';
+  }
+
   function applyTheme(theme, save = true) {
     const selected = theme === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = selected;
@@ -207,7 +168,41 @@
 
   function toggleTheme() {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
+    applyPagePreferences({ ...state.preferences, theme: next });
+  }
+
+  function applyPagePreferences(preferences, save = true) {
+    const next = {
+      theme: preferences.theme === 'dark' ? 'dark' : 'light',
+      layout: preferences.layout === 'vertical' ? 'vertical' : 'horizontal',
+      contrast: preferences.contrast === 'high' ? 'high' : 'normal'
+    };
+    state.preferences = next;
+    applyTheme(next.theme, false);
+    document.documentElement.dataset.layout = next.layout;
+    document.documentElement.dataset.contrast = next.contrast;
+    document.body.classList.toggle('layout-vertical', next.layout === 'vertical');
+    if (save) STORAGE.savePreferences(next);
+    const themeInput = $(`#preferenceTheme${next.theme === 'dark' ? 'Dark' : 'Light'}`);
+    const layoutInput = $(`#preferenceLayout${next.layout === 'vertical' ? 'Vertical' : 'Horizontal'}`);
+    const contrastInput = $(`#preferenceContrast${next.contrast === 'high' ? 'High' : 'Normal'}`);
+    if (themeInput) themeInput.checked = true;
+    if (layoutInput) layoutInput.checked = true;
+    if (contrastInput) contrastInput.checked = true;
+  }
+
+  function openPreferences() {
+    applyPagePreferences(state.preferences, false);
+    openModal('preferencesModal');
+  }
+
+  function savePreferences() {
+    const theme = $('input[name="preference-theme"]:checked')?.value || 'light';
+    const layout = $('input[name="preference-layout"]:checked')?.value || 'horizontal';
+    const contrast = $('input[name="preference-contrast"]:checked')?.value || 'normal';
+    applyPagePreferences({ theme, layout, contrast });
+    closeModal('preferencesModal');
+    showToast('Preferências da página atualizadas.', 'info');
   }
 
   function fillOptions(select, items, selected = '') {
@@ -241,7 +236,7 @@
 
   function syncNewProfessorLabs() {
     const dept = $('#newProfessorDept')?.value || DATA.departments[0];
-    const labs = state.labs.filter((lab) => lab.dept === dept).map((lab) => ({ value: lab.id, label: `${labDisplayName(lab)}${lab.room ? ` · Sala ${lab.room}` : ''}` }));
+    const labs = state.labs.filter((lab) => lab.dept === dept).map((lab) => ({ value: lab.id, label: `${lab.name}${lab.room ? ` · Sala ${lab.room}` : ''}` }));
     fillOptions($('#newProfessorLab'), labs.length ? labs : [{ value: '', label: 'Nenhum laboratório neste departamento', disabled: true }]);
   }
 
@@ -332,20 +327,12 @@
       return null;
     }
     const email = emailInput.value.trim().toLocaleLowerCase('pt-BR');
-    const profile = await STORAGE.authenticate(email, passwordInput.value, role);
+    const profile = await STORAGE.authenticate(email, passwordInput.value, role) || state.profiles.find((entry) => entry.role === role && entry.email.toLocaleLowerCase('pt-BR') === email && entry.password === passwordInput.value);
     if (!profile) {
       showToast('E-mail, senha ou tipo de perfil inválido.', 'error');
       passwordInput.focus();
       return null;
     }
-    const remote = await STORAGE.loadRemote();
-    if (!remote) {
-      await STORAGE.logout();
-      showToast('Não foi possível carregar os dados compartilhados. Tente novamente.', 'error');
-      return null;
-    }
-    applyRemoteState(remote);
-    state.knownNotificationIds = new Set(state.notifications.map((item) => item.id));
     return profile;
   }
 
@@ -384,9 +371,8 @@
     showToast(`Painel de ${profile.name} autenticado.`, 'info');
   }
 
-  async function logout() {
+  function logout() {
     stopLiveRefresh();
-    await STORAGE.logout();
     state.user = null;
     renderPortal();
     showToast('Você saiu da sua conta.', 'info');
@@ -395,7 +381,7 @@
   function profileMarkup(profile) {
     const isAdmin = profile.role === 'admin';
     const lab = profile.labId ? findLab(profile.labId) : null;
-    const details = [['Nome completo', profile.name], ['E-mail de cadastro', profile.email], ['Tipo de perfil', isAdmin ? 'Administrador' : 'Professor'], ['Departamento / curso', profile.dept || (isAdmin ? 'Acesso global' : '—')], ['Laboratório', lab ? labDisplayName(lab) : (isAdmin ? 'Acesso global' : 'Não vinculado')], ['Sala', profile.room || (lab && lab.room) || (isAdmin ? '—' : 'Não informada')]];
+    const details = [['Nome completo', profile.name], ['E-mail de cadastro', profile.email], ['Tipo de perfil', isAdmin ? 'Administrador' : 'Professor'], ['Departamento / curso', profile.dept || (isAdmin ? 'Acesso global' : '—')], ['Laboratório', lab ? lab.name : (isAdmin ? 'Acesso global' : 'Não vinculado')], ['Sala', profile.room || (lab && lab.room) || (isAdmin ? '—' : 'Não informada')]];
     return `<div class="profile-card"><div class="profile-card-heading"><span class="profile-avatar" aria-hidden="true">${escapeHTML((profile.name || '?').trim().charAt(0).toLocaleUpperCase('pt-BR'))}</span><div><p class="eyebrow">DADOS DE CADASTRO</p><h3>${escapeHTML(profile.name)}</h3><p>${escapeHTML(isAdmin ? 'Administrador' : 'Professor')}</p></div></div><dl class="profile-details">${details.map(([label, value]) => `<div class="profile-detail"><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join('')}</dl></div>`;
   }
   function closeDashboardNavMenus() {
@@ -525,7 +511,7 @@
     const editButton = document.querySelector('.direct-admin-actions');
     if (editButton) editButton.hidden = !admin || !selected;
   }
-  async function sendDirectMessage(textOverride = '') {
+  function sendDirectMessage(textOverride = '') {
     const input = directInput();
     const text = String(textOverride || input.value).trim();
     const attachment = state.pendingDirectAttachment;
@@ -534,25 +520,9 @@
     if (!profileId || !state.profiles.some((profile) => profile.id === profileId && profile.role === 'user')) { showToast('Selecione a conversa de um professor.', 'warning'); return false; }
     const message = { id: `dm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, profileId, senderId: state.user.id, senderName: state.user.name, text, time: new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date()), ...(attachment ? { attachment } : {}) };
     const directMessages = [...(state.directMessages || []), message];
+    if (!persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages })) return false;
     const recipient = state.user.role === 'admin' ? state.profiles.find((profile) => profile.id === profileId) : state.profiles.find((profile) => profile.role === 'admin');
-    const notificationType = state.user.role === 'admin' ? 'direct-message' : 'teacher-message';
-    const notificationId = `${notificationType}:${message.id}:${recipient?.id || ''}`;
-    const notifications = recipient && !(state.notifications || []).some((item) => item.id === notificationId)
-      ? [...(state.notifications || []), { id: notificationId, recipientId: recipient.id, type: notificationType, referenceId: message.id, text: `${state.user.name} enviou uma mensagem.`, time: message.time, read: false }]
-      : state.notifications;
-    if (!persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages, notifications }, { notifyRemoteFailure: false })) return false;
-    refreshNotificationBadge();
-    if (!await STORAGE.flushRemote()) {
-      const fresh = await STORAGE.loadRemote();
-      if (fresh) applyRemoteState(fresh);
-      if (fresh?.directMessages.some((item) => item.id === message.id)) {
-        input.value = ''; state.pendingDirectAttachment = null; const fileInput = directFileInput(); if (fileInput) fileInput.value = ''; updateDirectAttachmentStatus(); renderDirectMessages();
-        showToast('Mensagem enviada e sincronizada com a administração.', 'info');
-        return true;
-      }
-      showToast('Não foi possível confirmar o envio. Verifique a conexão antes de tentar novamente.', 'error');
-      return false;
-    }
+    addNotification(recipient?.id, state.user.role === 'admin' ? 'direct-message' : 'teacher-message', message.id, `${state.user.name} enviou uma mensagem.`);
     input.value = ''; state.pendingDirectAttachment = null; const fileInput = directFileInput(); if (fileInput) fileInput.value = ''; updateDirectAttachmentStatus(); renderDirectMessages(); return true;
   }
   function openDirectMessages() {
@@ -566,7 +536,7 @@
     const profile = state.profiles.find((entry) => entry.id === state.activeConversationProfileId);
     if (!profile) return;
     $('#directEditName').value = profile.name; $('#directEditEmail').value = profile.email;
-    fillOptions($('#directEditLab'), state.labs.filter((lab) => !profile.dept || lab.dept === profile.dept).map((lab) => ({ value: lab.id, label: `${labDisplayName(lab)}${lab.room ? ` · Sala ${lab.room}` : ''}` })));
+    fillOptions($('#directEditLab'), state.labs.filter((lab) => !profile.dept || lab.dept === profile.dept).map((lab) => ({ value: lab.id, label: lab.name })));
     $('#directEditLab').value = profile.labId || '';
     openModal('editDirectProfileModal');
   }
@@ -665,35 +635,12 @@
 
   function liveCell(value) { return escapeHTML(value == null ? '—' : value); }
 
-  function renderDepartmentOccupancyChart() {
-    const chart = $('#departmentOccupancyChart');
-    if (!chart) return;
-    const departments = [...new Set([...state.labs.map((lab) => lab.dept), ...state.profiles.filter((p) => p.role === 'user').map((p) => p.dept)].filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    if (!departments.length) { chart.innerHTML = '<p class="empty-state">Não há salas ou laboratórios cadastrados para exibir.</p>'; return; }
-    chart.innerHTML = departments.map((dept) => {
-      const labs = state.labs.filter((lab) => lab.dept === dept);
-      const occupiedCount = labs.filter((lab) => state.profiles.some((profile) => profile.role === 'user' && profile.labId === lab.id)).length;
-      const total = labs.length;
-      const percent = total ? Math.round(occupiedCount / total * 100) : 0;
-      const teacherCount = state.profiles.filter((profile) => profile.role === 'user' && (findLab(profile.labId)?.dept || profile.dept) === dept).length;
-      return `<article class="occupancy-item"><div class="occupancy-heading"><strong>${escapeHTML(dept)}</strong><span>${occupiedCount} de ${total} salas/laboratórios ocupados · ${teacherCount} ${teacherCount === 1 ? 'professor' : 'professores'}</span></div><div class="occupancy-track" role="meter" aria-label="${escapeHTML(dept)}: ${occupiedCount} de ${total} ocupados" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${occupiedCount}"><span class="occupancy-fill" style="width:${percent}%"></span></div></article>`;
-    }).join('');
-  }
   function renderLiveDatabase() {
     if (!state.user || state.user.role !== 'admin') return;
-    renderDepartmentOccupancyChart();
     const reportSelect = $('#reportLabSelect');
     const currentLab = reportSelect ? reportSelect.value : '';
-    const labOptions = state.labs.map((lab) => ({ value: lab.id, label: `${labDisplayName(lab)}${lab.room ? ` · Sala ${lab.room}` : ''}` }));
+    const labOptions = state.labs.map((lab) => ({ value: lab.id, label: lab.name }));
     fillOptions(reportSelect, labOptions.length ? labOptions : [{ value: '', label: 'Nenhum laboratório cadastrado', disabled: true }], currentLab);
-    const deptFilter = $('#teacherRoomDeptFilter');
-    const labFilter = $('#teacherRoomLabFilter');
-    const selectedDept = deptFilter?.value || 'Todos';
-    const selectedLab = labFilter?.value || 'Todos';
-    const departments = [...new Set([...state.labs.map((lab) => lab.dept), ...state.profiles.filter((p) => p.role === 'user').map((p) => p.dept)].filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    fillOptions(deptFilter, [{ value: 'Todos', label: 'Todos os departamentos' }, ...departments.map((dept) => ({ value: dept, label: dept }))], departments.includes(selectedDept) ? selectedDept : 'Todos');
-    const filteredLabs = state.labs.filter((lab) => deptFilter.value === 'Todos' || lab.dept === deptFilter.value);
-    fillOptions(labFilter, [{ value: 'Todos', label: 'Todos os laboratórios' }, ...filteredLabs.map((lab) => ({ value: lab.id, label: `${labDisplayName(lab)}${lab.room ? ` · Sala ${lab.room}` : ''}` }))], filteredLabs.some((lab) => lab.id === selectedLab) ? selectedLab : 'Todos');
     $('#liveProfilesCount').textContent = String(state.profiles.length);
     $('#liveLabsCount').textContent = String(state.labs.length);
     $('#liveAssetsCount').textContent = String(state.assets.length);
@@ -704,26 +651,8 @@
     const profilesBody = $('#liveProfilesTable');
     profilesBody.innerHTML = state.profiles.map((profile) => {
       const lab = profile.labId ? findLab(profile.labId) : null;
-      const actions = profile.role === 'user' ? `<div class="table-actions"><button class="button button-outline table-action" type="button" data-action="edit-professor" data-id="${escapeHTML(profile.id)}">Editar</button><button class="button button-danger-outline table-action" type="button" data-action="delete-professor" data-id="${escapeHTML(profile.id)}">Remover</button></div>` : '—';
-      return `<tr><td><strong>${liveCell(profile.name)}</strong></td><td>${liveCell(profile.email)}</td><td>${profile.role === 'admin' ? 'Administrador' : 'Professor'}</td><td>${liveCell(lab ? `${labDisplayName(lab)} · Sala ${lab.room || '—'}` : 'Acesso global')}</td><td>${actions}</td></tr>`;
+      return `<tr><td><strong>${liveCell(profile.name)}</strong></td><td>${liveCell(profile.email)}</td><td>${profile.role === 'admin' ? 'Administrador' : 'Professor'}</td><td>${liveCell(lab ? `${lab.name} · Sala ${lab.room || '—'}` : 'Acesso global')}</td></tr>`;
     }).join('');
-    const labsBody = $('#liveLabsTable');
-    if (labsBody) labsBody.innerHTML = state.labs.length ? state.labs.map((lab) => `<tr><td><strong>${liveCell(labDisplayName(lab))}</strong></td><td>${liveCell(lab.dept)}</td><td>${liveCell(lab.room || '—')}</td><td><button class="button button-outline table-action" type="button" data-action="edit-lab" data-id="${escapeHTML(lab.id)}">Editar</button></td></tr>`).join('') : '<tr><td colspan="4" class="empty-table-cell">Nenhum laboratório cadastrado.</td></tr>';
-    const teacherRoomBody = $('#teacherRoomReportTable');
-    if (teacherRoomBody) {
-      const teachers = state.profiles.filter((profile) => {
-        if (profile.role !== 'user') return false;
-        const lab = profile.labId ? findLab(profile.labId) : null;
-        const dept = lab?.dept || profile.dept || '';
-        const selectedDepartment = deptFilter?.value || 'Todos';
-        const selectedLaboratory = labFilter?.value || 'Todos';
-        return (selectedDepartment === 'Todos' || dept === selectedDepartment) && (selectedLaboratory === 'Todos' || profile.labId === selectedLaboratory);
-      }).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
-      teacherRoomBody.innerHTML = teachers.length ? teachers.map((profile) => {
-        const lab = profile.labId ? findLab(profile.labId) : null;
-        return `<tr><td><strong>${liveCell(profile.name)}</strong></td><td>${liveCell(profile.email)}</td><td>${liveCell(lab?.dept || profile.dept || '—')}</td><td>${liveCell(lab ? labDisplayName(lab) : 'Sem laboratório vinculado')}</td><td>${liveCell(lab?.room || profile.room || '—')}</td></tr>`;
-      }).join('') : '<tr><td colspan="5" class="empty-table-cell">Nenhum professor corresponde aos filtros.</td></tr>';
-    }
     assetsBody.innerHTML = state.assets.length ? state.assets.map((asset) => {
       const lab = findLab(asset.labId);
       return `<tr><td><span class="ticket-id">${liveCell(asset.code || asset.id)}</span></td><td><strong>${liveCell(asset.name)}</strong></td><td>${liveCell(lab ? lab.name : 'Não encontrado')}</td><td>${liveCell(asset.qty)}</td></tr>`;
@@ -731,34 +660,53 @@
     ticketsBody.innerHTML = state.tickets.length ? state.tickets.map((ticket) => `<tr><td><span class="ticket-id">${liveCell(ticket.id)}</span></td><td><strong>${liveCell(ticket.assetCode || ticket.assetName)}</strong></td><td>${liveCell(ticket.labName)}</td><td>${liveCell(ticket.requester)}</td><td>${statusMarkup(ticket.status)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-table-cell">Nenhum chamado registrado.</td></tr>';
   }
 
+  async function refreshLiveState() {
+    if (!state.user) return;
+    const fresh = await STORAGE.loadRemote();
+    if (!fresh) {
+      state.liveSyncFailures += 1;
+      setLiveSyncStatus('retrying', state.liveSyncFailures > 2 ? 'Reconectando...' : 'Sincronizando...');
+      return;
+    }
+    state.liveSyncFailures = 0;
+    setLiveSyncStatus('online', 'Sincronizado agora');
+    const incomingUnread = fresh.notifications.filter((item) => item.recipientId === state.user.id && !item.read && !state.knownNotificationIds.has(item.id));
+    incomingUnread.forEach((item) => showToast(item.text || 'Você recebeu uma nova atualização.', item.type === 'new-ticket' ? 'warning' : 'info'));
+    fresh.notifications.forEach((item) => state.knownNotificationIds.add(item.id));
+    const changed = JSON.stringify([state.profiles, state.labs, state.assets, state.tickets, state.directMessages, state.notifications]) !== JSON.stringify([fresh.profiles, fresh.labs, fresh.assets, fresh.tickets, fresh.directMessages, fresh.notifications]);
+    if (changed) {
+      state.profiles = fresh.profiles;
+      state.directMessages = fresh.directMessages;
+      state.notifications = fresh.notifications;
+      state.labs = fresh.labs;
+      state.assets = fresh.assets;
+      state.tickets = fresh.tickets;
+      document.body.classList.remove('live-update-flash');
+      void document.body.offsetWidth;
+      document.body.classList.add('live-update-flash');
+      window.setTimeout(() => document.body.classList.remove('live-update-flash'), 850);
+      renderPortal();
+    } else {
+      if (state.user.role === 'admin') renderLiveDatabase();
+      refreshNotificationBadge();
+    }
+  }
+
   function startLiveRefresh() {
     if (state.liveTimer || !state.user) return;
-    state.liveTimer = window.setInterval(async () => {
-      if (!state.user) return;
-      const fresh = await STORAGE.loadRemote();
-      if (!fresh) return;
-      const incomingUnread = fresh.notifications.filter((item) => item.recipientId === state.user.id && !item.read && !state.knownNotificationIds.has(item.id));
-      incomingUnread.forEach((item) => showToast(item.text || 'Você recebeu uma nova atualização.', item.type === 'new-ticket' ? 'warning' : 'info'));
-      fresh.notifications.forEach((item) => state.knownNotificationIds.add(item.id));
-      const changed = JSON.stringify([state.profiles, state.labs, state.assets, state.tickets, state.directMessages, state.notifications]) !== JSON.stringify([fresh.profiles, fresh.labs, fresh.assets, fresh.tickets, fresh.directMessages, fresh.notifications]);
-      if (changed) {
-        state.profiles = fresh.profiles;
-        state.directMessages = fresh.directMessages;
-        state.notifications = fresh.notifications;
-        state.labs = fresh.labs;
-        state.assets = fresh.assets;
-        state.tickets = fresh.tickets;
-        renderPortal();
-      } else {
-        if (state.user.role === 'admin') renderLiveDatabase();
-        refreshNotificationBadge();
-      }
-    }, 3000);
+    setLiveSyncStatus('retrying', 'Sincronizando...');
+    refreshLiveState();
+    state.liveTimer = window.setInterval(refreshLiveState, 3000);
+    state.liveVisibilityHandler = () => { if (!document.hidden) refreshLiveState(); };
+    document.addEventListener('visibilitychange', state.liveVisibilityHandler);
   }
 
   function stopLiveRefresh() {
     if (state.liveTimer) window.clearInterval(state.liveTimer);
     state.liveTimer = null;
+    if (state.liveVisibilityHandler) document.removeEventListener('visibilitychange', state.liveVisibilityHandler);
+    state.liveVisibilityHandler = null;
+    setLiveSyncStatus('idle', 'Sincronização pronta');
   }
 
   function renderAdminCharts() {
@@ -1002,10 +950,7 @@
   }
   function openAddLabModal() {
     if (!state.user || state.user.role !== 'admin') return;
-    state.editingLabId = null;
     $('#labForm').reset();
-    $('#labModalTitle').textContent = 'Cadastrar laboratório';
-    $('#labForm button[type="submit"]').textContent = 'Salvar laboratório';
     fillOptions($('#newLabDept'), DATA.departments, DATA.departments[0]);
     openModal('addLabModal');
   }
@@ -1040,84 +985,35 @@
       return;
     }
     const professor = { id: `prof-${Date.now().toString(36)}`, name, email, password, role: 'user', dept: lab.dept, labId: lab.id, room: lab.room || '' };
-    if (!await persistAdminChange({ profiles: [...state.profiles, professor], labs: state.labs, assets: state.assets, tickets: state.tickets })) return;
+    if (!persist({ profiles: [...state.profiles, professor], labs: state.labs, assets: state.assets, tickets: state.tickets })) return;
+    if (typeof STORAGE.flushRemote === 'function' && !(await STORAGE.flushRemote())) {
+      showToast('Professor salvo neste navegador, mas não foi possível confirmar a gravação no servidor.', 'error');
+      return;
+    }
     closeModal('addProfessorModal');
     renderPortal();
     showToast(`${name} foi cadastrado no ${lab.name}.`, 'info');
   }
 
-  function openEditProfessorModal(profileId) {
+  function saveNewLab() {
     if (!state.user || state.user.role !== 'admin') return;
-    const profile = state.profiles.find((item) => item.id === profileId && item.role === 'user');
-    if (!profile) { showToast('Professor não encontrado.', 'warning'); return; }
-    state.editingProfessorId = profile.id;
-    $('#editProfessorName').value = profile.name || '';
-    $('#editProfessorEmail').value = profile.email || '';
-    $('#editProfessorPassword').value = '';
-    fillOptions($('#editProfessorLab'), state.labs.map((lab) => ({ value: lab.id, label: `${lab.dept} · ${labDisplayName(lab)}${lab.room ? ` · Sala ${lab.room}` : ''}` })), profile.labId || '');
-    openModal('editProfessorModal');
-  }
-  async function saveEditedProfessor() {
-    if (!state.user || state.user.role !== 'admin') return;
-    const current = state.profiles.find((item) => item.id === state.editingProfessorId && item.role === 'user');
-    if (!current) { showToast('Professor não encontrado.', 'warning'); return; }
-    const name = requireTrimmedText($('#editProfessorName'), 'Informe o nome completo do professor.');
-    const email = requireTrimmedText($('#editProfessorEmail'), 'Informe um e-mail válido.');
-    const lab = findLab($('#editProfessorLab').value);
-    if (name === null || email === null || !lab) { if (!lab) showToast('Selecione um laboratório válido.', 'warning'); return; }
-    if (state.profiles.some((item) => item.id !== current.id && item.email.toLocaleLowerCase('pt-BR') === email.toLocaleLowerCase('pt-BR'))) { showToast('Este e-mail já está vinculado a outro perfil.', 'warning'); return; }
-    const password = $('#editProfessorPassword').value;
-    if (password && password.length < 6) { showToast('A nova senha deve ter pelo menos 6 caracteres.', 'warning'); $('#editProfessorPassword').focus(); return; }
-    const profiles = state.profiles.map((item) => item.id === current.id ? { ...item, name, email, labId: lab.id, dept: lab.dept, room: lab.room || '', ...(password ? { password } : {}) } : item);
-    if (!await persistAdminChange({ profiles, labs: state.labs, assets: state.assets, tickets: state.tickets })) return;
-    state.editingProfessorId = null; closeModal('editProfessorModal'); renderPortal(); showToast(password ? 'Informações atualizadas e senha redefinida.' : 'Informações do professor atualizadas.', 'info');
-  }
-  async function deleteProfessor(profileId) {
-    if (!state.user || state.user.role !== 'admin') return;
-    const profile = state.profiles.find((item) => item.id === profileId && item.role === 'user');
-    if (!profile) { showToast('Professor não encontrado.', 'warning'); return; }
-    if (!window.confirm(`Remover o acesso de ${profile.name}? Esta ação não poderá ser desfeita.`)) return;
-    const profiles = state.profiles.filter((item) => item.id !== profile.id);
-    const notifications = (state.notifications || []).filter((item) => item.recipientId !== profile.id);
-    if (!await persistAdminChange({ profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages: state.directMessages, notifications })) return;
-    if (state.activeConversationProfileId === profile.id) state.activeConversationProfileId = null;
-    renderPortal(); showToast(`${profile.name} foi removido.`, 'info');
-  }
-  function openEditLabModal(labId) {
-    if (!state.user || state.user.role !== 'admin') return;
-    const lab = findLab(labId);
-    if (!lab) { showToast('Laboratório não encontrado.', 'warning'); return; }
-    state.editingLabId = lab.id;
-    $('#labForm').reset();
-    $('#labModalTitle').textContent = 'Editar laboratório';
-    $('#labForm button[type="submit"]').textContent = 'Salvar alterações';
-    fillOptions($('#newLabDept'), DATA.departments, lab.dept);
-    $('#newLabName').value = labDisplayName(lab) === 'Laboratório não encontrado' ? '' : labDisplayName(lab);
-    $('#newLabRoom').value = lab.room || '';
-    openModal('addLabModal');
-  }
-  async function saveNewLab() {
-    if (!state.user || state.user.role !== 'admin') return;
-    const editing = state.editingLabId ? findLab(state.editingLabId) : null;
     const dept = $('#newLabDept').value;
     const name = requireTrimmedText($('#newLabName'), 'Informe o nome do laboratório.');
-    const room = requireTrimmedText($('#newLabRoom'), 'Informe o número da sala.');
-    if (name === null || room === null) return;
-    const normalize = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR');
-    const duplicate = state.labs.some((lab) => lab.id !== editing?.id && normalize(lab.dept) === normalize(dept) && normalize(lab.room) === normalize(room));
-    if (duplicate) { showToast('Essa sala já está cadastrada neste departamento. Informe outro número de sala.', 'warning'); $('#newLabRoom').focus(); return; }
-    if (editing) {
-      const labs = state.labs.map((lab) => lab.id === editing.id ? { ...lab, dept, name, room } : lab);
-      const profiles = state.profiles.map((profile) => profile.labId === editing.id ? { ...profile, dept, room } : profile);
-      if (!await persistAdminChange({ profiles, labs, assets: state.assets, tickets: state.tickets })) return;
-      state.editingLabId = null; closeModal('addLabModal'); populateSelects(); renderPortal(); showToast('Laboratório atualizado.', 'info');
+    if (name === null) return;
+    const duplicate = state.labs.some((lab) => lab.dept === dept && lab.name.toLocaleLowerCase('pt-BR') === name.toLocaleLowerCase('pt-BR'));
+    if (duplicate) {
+      showToast('Já existe um laboratório com esse nome neste departamento.', 'warning');
       return;
     }
-    const lab = { id: `l${Date.now().toString(36)}`, dept, name, room };
+    const lab = { id: `l${Date.now().toString(36)}`, dept, name };
     const nextLabs = [...state.labs, lab];
-    if (!await persistAdminChange({ labs: nextLabs, assets: state.assets, tickets: state.tickets })) return;
-    closeModal('addLabModal'); populateSelects(); renderPortal(); showToast('Laboratório cadastrado e sincronizado com os demais dispositivos.', 'info');
+    if (!persist({ labs: nextLabs, assets: state.assets, tickets: state.tickets })) return;
+    closeModal('addLabModal');
+    populateSelects();
+    renderPortal();
+    showToast('Laboratório cadastrado e sincronizado com os demais dispositivos.', 'info');
   }
+
   function openChatModal(ticketId) {
     const ticket = findTicket(ticketId);
     if (!ticket) return;
@@ -1192,27 +1088,6 @@
     openModal('qrCodeModal');
   }
 
-  function exportTeacherRoomPdf() {
-    if (!state.user || state.user.role !== 'admin') { showToast('Apenas administradores podem exportar este relatório.', 'warning'); return; }
-    const selectedDepartment = $('#teacherRoomDeptFilter')?.value || 'Todos';
-    const selectedLaboratory = $('#teacherRoomLabFilter')?.value || 'Todos';
-    const teachers = state.profiles.filter((profile) => {
-      if (profile.role !== 'user') return false;
-      const lab = profile.labId ? findLab(profile.labId) : null;
-      const dept = lab?.dept || profile.dept || '';
-      return (selectedDepartment === 'Todos' || dept === selectedDepartment) && (selectedLaboratory === 'Todos' || profile.labId === selectedLaboratory);
-    }).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
-    const rows = teachers.map((profile) => {
-      const lab = profile.labId ? findLab(profile.labId) : null;
-      return `<tr><td>${escapeHTML(profile.name || '—')}</td><td>${escapeHTML(profile.email || '—')}</td><td>${escapeHTML(lab?.dept || profile.dept || '—')}</td><td>${escapeHTML(lab?.name || 'Sem laboratório vinculado')}</td><td>${escapeHTML(lab?.room || profile.room || '—')}</td></tr>`;
-    }).join('');
-    const generatedAt = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long', timeStyle: 'short' }).format(new Date());
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) { showToast('O navegador bloqueou a janela de impressão. Permita pop-ups e tente novamente.', 'warning'); return; }
-    printWindow.document.open();
-    printWindow.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório de professores por laboratório e sala</title><style>@page{size:landscape;margin:16mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#172b43;margin:0}header{border-bottom:3px solid #155da8;padding:0 0 14px;margin-bottom:20px}h1{font-size:24px;margin:0 0 6px;color:#102c4c}p{margin:0;color:#52677d;font-size:12px}.meta{margin-top:10px;font-size:11px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#102c4c;color:#fff;text-align:left;padding:10px 8px}td{border-bottom:1px solid #d3dfeb;padding:9px 8px;vertical-align:top}tbody tr:nth-child(even){background:#f3f7fc}footer{margin-top:15px;color:#52677d;font-size:10px}@media print{thead{display:table-header-group}tr{break-inside:avoid}}</style></head><body><header><h1>Professores por laboratório e sala</h1><p>Relatório de alocação de professores</p><p class="meta">Gerado em ${escapeHTML(generatedAt)} · Total de professores: ${teachers.length}</p></header><table><thead><tr><th>Professor</th><th>E-mail</th><th>Departamento</th><th>Laboratório</th><th>Sala</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Nenhum professor cadastrado.</td></tr>'}</tbody></table><footer>EquipVirtual · Relatório administrativo</footer><script>window.addEventListener('load',function(){setTimeout(function(){window.focus();window.print()},250)})<\/script></body></html>`);
-    printWindow.document.close();
-  }
   function reportRowsForLab(labId) {
     return state.tickets.filter((ticket) => ticket.labId === labId);
   }
@@ -1314,6 +1189,8 @@
     if (action === 'enter-portal') enterPortal();
     else if (action === 'go-home') { event.preventDefault(); goHome(); }
     else if (action === 'toggle-theme') toggleTheme();
+    else if (action === 'open-preferences') openPreferences();
+    else if (action === 'save-preferences') savePreferences();
     else if (action === 'toggle-menu') setMobileMenu(!$('#siteNav').classList.contains('is-open'));
     else if (action === 'toggle-user-nav') toggleDashboardNav('user');
     else if (action === 'toggle-admin-nav') toggleDashboardNav('admin');
@@ -1332,10 +1209,7 @@
     else if (action === 'edit-asset') openEditAssetModal(button.dataset.id);
     else if (action === 'delete-asset') deleteAsset(button.dataset.id);
     else if (action === 'open-add-lab') openAddLabModal();
-    else if (action === 'edit-lab') openEditLabModal(button.dataset.id);
     else if (action === 'open-add-professor') openAddProfessorModal();
-    else if (action === 'edit-professor') openEditProfessorModal(button.dataset.id);
-    else if (action === 'delete-professor') deleteProfessor(button.dataset.id);
     else if (action === 'open-ticket') openTicketModalForAsset(button.dataset.id);
     else if (action === 'open-qr') openQrModal(button.dataset.id);
     else if (action === 'open-chat') openChatModal(button.dataset.id);
@@ -1344,7 +1218,6 @@
     else if (action === 'switch-user-tab') switchUserTab(button.dataset.tab);
     else if (action === 'switch-admin-tab') switchAdminTab(button.dataset.tab);
     else if (action === 'export-report-image') exportReportImage();
-    else if (action === 'export-teacher-room-pdf') exportTeacherRoomPdf();
     else if (action === 'refresh-live') refreshSharedState();
   }
 
@@ -1370,12 +1243,11 @@
       saveNewTicket();
     }
     else if (type === 'asset') saveNewAsset();
-    else if (type === 'lab') await saveNewLab();
-    else if (type === 'professor') await saveNewProfessor();
-    else if (type === 'edit-professor') await saveEditedProfessor();
+    else if (type === 'lab') saveNewLab();
+    else if (type === 'professor') saveNewProfessor();
     else if (type === 'chat') sendChatMessage();
-    else if (type === 'direct-message') { if (await sendDirectMessage()) event.target.reset(); }
-    else if (type === 'profile-request') { const text = requireTrimmedText($('#profileRequestText'), 'Escreva sua dúvida ou solicitação.'); if (text !== null && await sendDirectMessage(text)) { $('#profileRequestText').value = ''; closeModal('profileModal'); openDirectMessages(); showToast('Solicitação enviada à administração.', 'info'); } }
+    else if (type === 'direct-message') { if (sendDirectMessage()) event.target.reset(); }
+    else if (type === 'profile-request') { const text = requireTrimmedText($('#profileRequestText'), 'Escreva sua dúvida ou solicitação.'); if (text !== null && sendDirectMessage(text)) { $('#profileRequestText').value = ''; closeModal('profileModal'); openDirectMessages(); showToast('Solicitação enviada à administração.', 'info'); } }
     else if (type === 'edit-direct-profile') saveDirectProfileEdit();
   }
 
@@ -1384,7 +1256,6 @@
     else if (event.target.id === 'newProfessorDept') syncNewProfessorLabs();
     else if (event.target.id === 'userLabFilterSelect') renderUserDashboard();
     else if (event.target.id === 'adminCourseFilter') renderAdminDashboard();
-    else if (event.target.id === 'teacherRoomDeptFilter' || event.target.id === 'teacherRoomLabFilter') renderLiveDatabase();
     else if (event.target.id === 'modalTicketPhoto') handlePhotoChange(event.target);
     else if (event.target.matches('[data-direct-file-input]')) handleDirectFileChange(event.target);
   }
@@ -1433,19 +1304,22 @@
   async function initialize() {
     const remote = await STORAGE.loadRemote();
     if (remote) {
-      applyRemoteState(remote);
-      state.user = STORAGE.currentProfile();
+      state.profiles = remote.profiles;
+      state.labs = remote.labs;
+      state.assets = remote.assets;
+      state.tickets = remote.tickets;
+      state.directMessages = remote.directMessages || [];
+      state.notifications = remote.notifications || [];
     }
     state.knownNotificationIds = new Set(state.notifications.map((item) => item.id));
     populateSelects();
-    applyTheme(STORAGE.readTheme(), false);
+    applyPagePreferences(STORAGE.readPreferences(), false);
     $('#copyrightYear').textContent = String(new Date().getFullYear());
     document.addEventListener('click', handleClick);
     document.addEventListener('submit', handleSubmit);
     document.addEventListener('change', handleChange);
     document.addEventListener('input', handleInput);
     document.addEventListener('keydown', handleKeydown);
-    window.addEventListener('ev-remote-save-failed', () => showToast('Não foi possível confirmar a gravação no servidor. Confira a conexão antes de continuar.', 'error'));
     window.addEventListener('storage', (event) => {
       if (!state.user || !['ev_profiles', 'ev_labs', 'ev_assets', 'ev_tickets', 'ev_direct_messages', 'ev_notifications'].includes(event.key)) return;
       const fresh = STORAGE.load();
@@ -1454,7 +1328,6 @@
     });
     if (window.location.hash === '#portal') enterPortal();
     renderPortal();
-    if (state.user) startLiveRefresh();
   }
 
   document.addEventListener('DOMContentLoaded', initialize);

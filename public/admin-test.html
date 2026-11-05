@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EquipVirtual · Teste do painel administrativo</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="portal-topbar"><div class="container portal-topbar-inner">
+    <a class="brand" href="index.html" aria-label="Voltar ao EquipVirtual"><span class="brand-mark" aria-hidden="true">EV</span><span class="brand-word">Equip<span>Virtual</span></span><span class="brand-tag">TESTE</span></a>
+    <div class="portal-actions"><a class="button button-quiet" href="index.html">← Painel real</a><button class="icon-button theme-toggle" type="button" id="themeToggle" aria-label="Alternar tema"><span class="theme-icon" aria-hidden="true"></span></button></div>
+  </div></header>
+  <main class="container portal-container">
+    <section class="dashboard-section" aria-labelledby="testTitle">
+      <div class="dashboard-heading"><div><p class="eyebrow">AMBIENTE DE TESTE</p><h1 id="testTitle">Painel administrativo · gráficos</h1><p class="dashboard-subtitle">Visualização com dados simulados para validar status, laboratórios e responsividade.</p></div><div class="dashboard-actions"><button class="button button-outline" type="button" id="addTicket">＋ Simular chamado</button><button class="button button-primary" type="button" id="resetData">↻ Restaurar dados</button></div></div>
+      <div class="metrics-grid metrics-grid-three"><article class="metric-card"><span class="metric-icon icon-blue">▣</span><div><span class="metric-label">Total de chamados</span><strong class="metric-value" id="totalTickets">0</strong></div></article><article class="metric-card"><span class="metric-icon icon-amber">↻</span><div><span class="metric-label">Em andamento</span><strong class="metric-value" id="openTickets">0</strong></div></article><article class="metric-card"><span class="metric-icon icon-lime">✓</span><div><span class="metric-label">Concluídos</span><strong class="metric-value" id="doneTickets">0</strong></div></article></div>
+      <div class="chart-grid"><section class="chart-card"><div class="chart-heading"><div><p class="eyebrow">STATUS</p><h2>Chamados por status</h2></div></div><div class="status-chart-wrap"><div id="testStatusChart" class="donut-chart" role="img"></div><ul class="chart-legend" id="testStatusLegend"></ul></div></section><section class="chart-card"><div class="chart-heading"><div><p class="eyebrow">LABORATÓRIOS</p><h2>Chamados por laboratório</h2></div></div><div id="testLabChart" class="bar-chart" role="img"></div></section></div>
+      <section class="table-card" style="margin-top:18px"><div class="table-scroll"><table><caption class="visually-hidden">Dados de teste dos chamados</caption><thead><tr><th>Número</th><th>Laboratório</th><th>Item</th><th>Status</th></tr></thead><tbody id="testTicketsTable"></tbody></table></div></section>
+    </section>
+  </main>
+  <script src="js/admin-test.js"></script>
+</body>
+</html>
