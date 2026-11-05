@@ -1,0 +1,13 @@
+{
+  "name": "equipvirtual",
+  "version": "1.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "migrate:fixed-profiles": "node scripts/migrate-fixed-profiles.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "mysql2": "^3.14.3"
+  }
+}
