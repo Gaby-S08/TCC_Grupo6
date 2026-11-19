@@ -13,6 +13,28 @@ const DB_TABLE = 'help_app_state';
 let pool;
 let ready;
 let storageMode = null;
+const sseClients = new Set();
+
+function databaseConfig() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+
+  const hasSeparateConfig = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']
+    .some((key) => process.env[key]);
+  if (!hasSeparateConfig) return null;
+
+  return {
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: Number(process.env.DB_PORT || 3306),
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'help_db',
+    waitForConnections: true,
+    connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
+    queueLimit: 0,
+    connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT || 10000),
+    charset: 'utf8mb4'
+  };
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -33,6 +55,13 @@ function publicState(state) {
   return { ...state, profiles: state.profiles.map(publicProfile) };
 }
 
+function broadcastState(state) {
+  const payload = `event: state\ndata: ${JSON.stringify(publicState(state))}\n\n`;
+  for (const client of sseClients) {
+    try { client.write(payload); } catch (error) { sseClients.delete(client); }
+  }
+}
+
 function normalizeState(raw) {
   return {
     profiles: Array.isArray(raw.profiles) ? raw.profiles : [],
@@ -45,8 +74,12 @@ function normalizeState(raw) {
 }
 
 async function getPool() {
-  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL não está disponível.');
-  if (!pool) pool = mysql.createPool(process.env.DATABASE_URL);
+  const config = databaseConfig();
+  if (!config) throw new Error('Configuração do MySQL não está disponível.');
+  if (!pool) {
+    pool = mysql.createPool(config);
+    await pool.query('SELECT 1');
+  }
   return pool;
 }
 
@@ -137,13 +170,14 @@ async function saveState(raw) {
     const temporaryFile = `${FALLBACK_STATE_FILE}.tmp`;
     await fs.promises.writeFile(temporaryFile, JSON.stringify(next, null, 2), 'utf8');
     await fs.promises.rename(temporaryFile, FALLBACK_STATE_FILE);
+    broadcastState(next);
     return next;
   }
   const db = await getPool();
   await db.execute(`UPDATE ${DB_TABLE} SET profiles = ?, labs = ?, assets = ?, tickets = ?, direct_messages = ?, notifications = ? WHERE id = 1`, [
     JSON.stringify(next.profiles), JSON.stringify(next.labs), JSON.stringify(next.assets), JSON.stringify(next.tickets), JSON.stringify(next.directMessages), JSON.stringify(next.notifications)
   ]);
-  await db.query('COMMIT');
+  broadcastState(next);
   return next;
 }
 
@@ -164,7 +198,7 @@ function sendJson(response, status, payload) {
 
 function contentType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  return ({ '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' })[ext] || 'application/octet-stream';
+  return ({ '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' })[ext] || 'application/octet-stream';
 }
 
 async function handleApi(request, response, url) {
@@ -175,11 +209,33 @@ async function handleApi(request, response, url) {
   }
   if (url.pathname === '/api/health' && request.method === 'GET') {
     await ensureDatabase();
-    sendJson(response, 200, { ok: true, service: 'Help! shared data' });
+    sendJson(response, 200, {
+      ok: true,
+      service: 'Help! shared data',
+      storage: storageMode,
+      database: storageMode === 'mysql' ? 'connected' : 'fallback-local'
+    });
     return;
   }
   if (url.pathname === '/api/state' && request.method === 'GET') {
     sendJson(response, 200, publicState(await getState()));
+    return;
+  }
+  if (url.pathname === '/api/events' && request.method === 'GET') {
+    const state = await getState();
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no'
+    });
+    response.write(`event: state\ndata: ${JSON.stringify(publicState(state))}\n\n`);
+    sseClients.add(response);
+    const heartbeat = setInterval(() => {
+      try { response.write(': heartbeat\n\n'); } catch (error) { clearInterval(heartbeat); sseClients.delete(response); }
+    }, 20000);
+    request.on('close', () => { clearInterval(heartbeat); sseClients.delete(response); });
     return;
   }
   if (url.pathname === '/api/state' && request.method === 'PUT') {

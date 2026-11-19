@@ -381,7 +381,7 @@ O cabeçalho do sistema possui um sino de notificações. Ele mostra:
 - Mensagens em chamados.
 - Alterações de status.
 
-A sincronização automática consulta o servidor a cada 3 segundos. Assim, quando um professor enviar uma mensagem em um dispositivo, o administrador poderá receber o alerta em outro dispositivo conectado.
+A sincronização principal usa uma conexão SSE persistente (`/api/events`). Assim, quando um professor enviar uma mensagem ou abrir/responder um chamado, o servidor transmite o estado atualizado imediatamente aos administradores conectados e a notificação aparece sem esperar o próximo ciclo. Se a conexão cair, o navegador tenta reconectar automaticamente e mantém uma consulta de fallback a cada 15 segundos.
 
 ---
 

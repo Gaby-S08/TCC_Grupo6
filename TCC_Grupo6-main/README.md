@@ -36,7 +36,7 @@ O projeto inclui `database/help_app_state.sql`, que cria o banco `help_db`, a ta
 - Histórico de manutenção por laboratório, conversa por chamado, fotos e atualização de status.
 - Painel administrativo organizado em abas de Visão geral, Gráficos, Usuários e laboratórios, Catálogo, Chamados, Relatórios e Mensagens. Inclui gráfico de chamados por status, gráfico por laboratório e monitoramento ao vivo do banco compartilhado.
 - Tabelas ao vivo de perfis, laboratórios, itens catalogados e chamados de manutenção.
-- Atualização automática a cada 3 segundos pela API para professores e administradores em dispositivos diferentes.
+- Conexão em tempo real via SSE entre professores e administradores, com atualização imediata de mensagens, chamados e notificações; consulta de fallback a cada 15 segundos quando necessário.
 - Relatório por laboratório com catálogo, histórico, status e indicadores. O botão `Exportar PDF` abre um relatório pronto para impressão; na janela do navegador, selecione `Salvar como PDF`.
 - Geração de QR Code com identificação textual do ativo. O QR não aponta para uma URL pública ou serviço de consulta inexistente.
 - Perfil aberto pelo avatar no canto superior direito, com informações de cadastro e envio de solicitações pelo chat.

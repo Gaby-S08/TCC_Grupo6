@@ -16,10 +16,12 @@
     photoTask: Promise.resolve(),
     photoToken: 0,
     pendingDirectAttachment: null,
+    installPrompt: null,
     currentUserTab: 'catalog',
     adminTab: 'overview',
     preferences: STORAGE.readPreferences(),
     liveTimer: null,
+    liveConnection: null,
     liveSyncFailures: 0,
     liveVisibilityHandler: null,
     knownNotificationIds: new Set()
@@ -39,6 +41,13 @@
   }
 
   function findLab(id) { return state.labs.find((lab) => lab.id === id) || null; }
+  function getProfileLab() {
+    if (!state.user || state.user.role !== 'user' || !state.user.labId) return null;
+    return { id: state.user.labId, dept: state.user.dept || 'Informática', name: `Laboratório de ${state.user.dept || 'Informática'} · Sala ${state.user.room || '—'}`, room: state.user.room || '', profileId: state.user.id };
+  }
+  function findAccessibleLab(id) {
+    return findLab(id) || (getProfileLab()?.id === id ? getProfileLab() : null);
+  }
   function findAsset(id) { return state.assets.find((asset) => asset.id === id) || null; }
   function findTicket(id) { return state.tickets.find((ticket) => ticket.id === id) || null; }
 
@@ -82,6 +91,7 @@
     if (type === 'new-ticket') return '⚠';
     if (type === 'ticket-update') return '✓';
     if (type === 'ticket-message') return '✉';
+    if (type === 'profile-request') return '✎';
     return '●';
   }
   function renderNotificationList() {
@@ -110,7 +120,7 @@
     persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages: state.directMessages, notifications });
     refreshNotificationBadge();
     const item = notifications.find((entry) => entry.id === notificationId);
-    if (item?.type === 'teacher-message' || item?.type === 'direct-message') openDirectMessages();
+    if (item?.type === 'teacher-message' || item?.type === 'direct-message' || item?.type === 'profile-request') openDirectMessages();
     else if (item?.type === 'new-ticket' || item?.type === 'ticket-message' || item?.type === 'ticket-update') {
       if (state.user.role === 'admin') switchAdminTab('tickets'); else switchUserTab('history');
     }
@@ -122,6 +132,15 @@
     const notifications = [...(state.notifications || []), { id, recipientId, type, referenceId: String(referenceId), text, time: new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date()), read: false }];
     persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages: state.directMessages, notifications });
     refreshNotificationBadge();
+    if (recipientId === state.user?.id) pulseNotificationIcon();
+  }
+  function pulseNotificationIcon() {
+    const button = $('.notification-button');
+    if (!button) return;
+    button.classList.remove('notification-arrival');
+    void button.offsetWidth;
+    button.classList.add('notification-arrival');
+    window.setTimeout(() => button.classList.remove('notification-arrival'), 1300);
   }
   function markNotificationsRead(types) {
     if (!state.user) return;
@@ -145,6 +164,22 @@
       toast.style.transform = 'translateY(5px)';
       window.setTimeout(() => toast.remove(), 220);
     }, 3600);
+  }
+
+  function setInstallButtons(visible) {
+    $$('.install-app-button').forEach((button) => { button.hidden = !visible; });
+  }
+
+  async function installApp() {
+    if (!state.installPrompt) {
+      showToast('Use o menu do Google Chrome e escolha “Instalar Help!”.', 'info');
+      return;
+    }
+    state.installPrompt.prompt();
+    const choice = await state.installPrompt.userChoice;
+    state.installPrompt = null;
+    setInstallButtons(false);
+    if (choice.outcome === 'accepted') showToast('Help! instalado neste dispositivo.', 'info');
   }
 
   function setLiveSyncStatus(status, label) {
@@ -302,7 +337,7 @@
     login.hidden = true;
     badge.hidden = false;
     $('#userNameDisplay').textContent = state.user.name;
-    $('#userAvatarInitial').textContent = state.user.name.trim().charAt(0).toLocaleUpperCase('pt-BR') || 'E';
+    $('#userAvatar').innerHTML = state.user.avatar ? `<img class="avatar-photo" src="${escapeHTML(state.user.avatar)}" alt="Foto de ${escapeHTML(state.user.name)}">` : `<span id="userAvatarInitial">${escapeHTML(state.user.name.trim().charAt(0).toLocaleUpperCase('pt-BR') || 'E')}</span>`;
     refreshNotificationBadge();
     $('#userRoleDisplay').textContent = state.user.role === 'admin' ? 'Administrador · acesso global' : `Sala: ${state.user.room || (state.user.labId && findLab(state.user.labId)?.room) || '—'}`;
 
@@ -382,7 +417,9 @@
     const isAdmin = profile.role === 'admin';
     const lab = profile.labId ? findLab(profile.labId) : null;
     const details = [['Nome completo', profile.name], ['E-mail de cadastro', profile.email], ['Tipo de perfil', isAdmin ? 'Administrador' : 'Professor'], ['Departamento / curso', profile.dept || (isAdmin ? 'Acesso global' : '—')], ['Laboratório', lab ? lab.name : (isAdmin ? 'Acesso global' : 'Não vinculado')], ['Sala', profile.room || (lab && lab.room) || (isAdmin ? '—' : 'Não informada')]];
-    return `<div class="profile-card"><div class="profile-card-heading"><span class="profile-avatar" aria-hidden="true">${escapeHTML((profile.name || '?').trim().charAt(0).toLocaleUpperCase('pt-BR'))}</span><div><p class="eyebrow">DADOS DE CADASTRO</p><h3>${escapeHTML(profile.name)}</h3><p>${escapeHTML(isAdmin ? 'Administrador' : 'Professor')}</p></div></div><dl class="profile-details">${details.map(([label, value]) => `<div class="profile-detail"><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join('')}</dl></div>`;
+    const avatar = profile.avatar ? `<img class="profile-avatar-image" src="${escapeHTML(profile.avatar)}" alt="Foto de ${escapeHTML(profile.name)}">` : escapeHTML((profile.name || '?').trim().charAt(0).toLocaleUpperCase('pt-BR'));
+    const cameraIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h3l1.4-2h7.2l1.4 2h3v10H4z"/><circle cx="12" cy="13.5" r="3.2"/></svg>';
+    return `<div class="profile-card"><div class="profile-card-heading"><button class="profile-avatar profile-avatar-edit" type="button" data-action="trigger-profile-photo" aria-label="Alterar foto de perfil" title="Alterar foto de perfil">${avatar}<span class="profile-camera-icon">${cameraIcon}</span></button><div><p class="eyebrow">DADOS DE CADASTRO</p><h3>${escapeHTML(profile.name)}</h3><p>${escapeHTML(isAdmin ? 'Administrador' : 'Professor')}</p></div></div><dl class="profile-details">${details.map(([label, value]) => `<div class="profile-detail"><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join('')}</dl></div>`;
   }
   function closeDashboardNavMenus() {
     [['userDashboardNavMenu', 'userDashboardNavToggle'], ['adminDashboardNavMenu', 'adminDashboardNavToggle']].forEach(([menuId, toggleId]) => {
@@ -414,7 +451,7 @@
       button.classList.toggle('is-active', active); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; panels[key].hidden = !active;
     });
     syncDashboardNav('user', state.currentUserTab, buttons[state.currentUserTab]?.textContent || 'Catálogo de ativos');
-    if (state.currentUserTab === 'messages') { markNotificationsRead(['direct-message', 'ticket-message']); renderDirectMessages(); }
+    if (state.currentUserTab === 'messages') { markNotificationsRead(['direct-message', 'profile-request', 'ticket-message']); renderDirectMessages(); }
     else if (state.currentUserTab === 'history') markNotificationsRead(['ticket-update', 'ticket-message']);
   }
   function switchAdminTab(tab) {
@@ -424,14 +461,34 @@
     $$('.admin-tab-panel').forEach((panel) => { const active = panel.dataset.adminPanel === state.adminTab; panel.hidden = !active; panel.classList.toggle('is-active', active); });
     const activeAdminButton = $(`.admin-tab[data-tab="${state.adminTab}"]`);
     syncDashboardNav('admin', state.adminTab, activeAdminButton?.textContent || 'Visão geral');
-    if (state.adminTab === 'messages') { markNotificationsRead(['teacher-message']); renderDirectMessages(); }
+    if (state.adminTab === 'messages') { markNotificationsRead(['teacher-message', 'profile-request']); renderDirectMessages(); }
     else if (state.adminTab === 'tickets') markNotificationsRead(['new-ticket']);
   }
   function openProfile() {
     if (!state.user) return;
     $('#profileModalDetails').innerHTML = profileMarkup(state.user);
     $('#profileRequestText').value = '';
+    $('#profilePhotoInput').value = '';
     openModal('profileModal');
+  }
+  function handleProfilePhotoChange(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { input.value = ''; showToast('Escolha um arquivo de imagem.', 'warning'); return; }
+    if (file.size > 2 * 1024 * 1024) { input.value = ''; showToast('A foto deve ter no máximo 2 MB.', 'warning'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const avatar = String(reader.result);
+      const profiles = state.profiles.map((profile) => profile.id === state.user.id ? { ...profile, avatar } : profile);
+      if (!persist({ profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages: state.directMessages })) return;
+      state.profiles = profiles;
+      state.user = { ...state.user, avatar };
+      renderPortal();
+      $('#profileModalDetails').innerHTML = profileMarkup(state.user);
+      showToast('Foto de perfil atualizada.', 'info');
+    };
+    reader.onerror = () => showToast('Não foi possível carregar a foto.', 'error');
+    reader.readAsDataURL(file);
   }
   function directInput() { return state.user?.role === 'admin' ? $('#adminDirectMessageInput') : $('#userDirectMessageInput'); }
   function directFileInput() { return state.user?.role === 'admin' ? $('#adminDirectFileInput') : $('#userDirectFileInput'); }
@@ -505,13 +562,14 @@
     const messages = (state.directMessages || []).filter((message) => message.profileId === selected.id);
     feed.innerHTML = messages.length ? messages.map((message) => {
       const own = message.senderId === state.user.id;
-      return `<article class="direct-message${own ? ' is-own' : ''}"><p class="direct-message-meta">${escapeHTML(message.senderName)} · ${escapeHTML(message.time)}</p><div class="direct-message-bubble">${message.text ? `<p>${escapeHTML(message.text)}</p>` : ''}${directAttachmentMarkup(message.attachment)}</div></article>`;
+      const actions = own ? `<div class="direct-message-actions"><button type="button" data-action="edit-direct-message" data-message-id="${escapeHTML(message.id)}">Editar</button><button type="button" data-action="delete-direct-message" data-message-id="${escapeHTML(message.id)}">Excluir</button></div>` : '';
+      return `<article class="direct-message${own ? ' is-own' : ''}"><p class="direct-message-meta">${escapeHTML(message.senderName)} · ${escapeHTML(message.time)}${message.edited ? ' · editada' : ''}</p><div class="direct-message-bubble">${message.text ? `<p>${escapeHTML(message.text)}</p>` : ''}${directAttachmentMarkup(message.attachment)}</div>${actions}</article>`;
     }).join('') : '<p class="direct-empty">Esta conversa está vazia. Envie uma mensagem para começar.</p>';
     feed.scrollTop = feed.scrollHeight;
     const editButton = document.querySelector('.direct-admin-actions');
     if (editButton) editButton.hidden = !admin || !selected;
   }
-  function sendDirectMessage(textOverride = '') {
+  function sendDirectMessage(textOverride = '', notificationContext = '') {
     const input = directInput();
     const text = String(textOverride || input.value).trim();
     const attachment = state.pendingDirectAttachment;
@@ -522,8 +580,25 @@
     const directMessages = [...(state.directMessages || []), message];
     if (!persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages })) return false;
     const recipient = state.user.role === 'admin' ? state.profiles.find((profile) => profile.id === profileId) : state.profiles.find((profile) => profile.role === 'admin');
-    addNotification(recipient?.id, state.user.role === 'admin' ? 'direct-message' : 'teacher-message', message.id, `${state.user.name} enviou uma mensagem.`);
+    addNotification(recipient?.id, notificationContext ? 'profile-request' : (state.user.role === 'admin' ? 'direct-message' : 'teacher-message'), message.id, notificationContext || `${state.user.name} enviou uma mensagem.`);
     input.value = ''; state.pendingDirectAttachment = null; const fileInput = directFileInput(); if (fileInput) fileInput.value = ''; updateDirectAttachmentStatus(); renderDirectMessages(); return true;
+  }
+  function editDirectMessage(messageId) {
+    const message = (state.directMessages || []).find((entry) => entry.id === messageId && entry.senderId === state.user?.id);
+    if (!message) return;
+    const nextText = window.prompt('Edite sua mensagem:', message.text || '');
+    if (nextText === null) return;
+    const text = nextText.trim();
+    if (!text && !message.attachment) { showToast('A mensagem precisa ter texto ou arquivo.', 'warning'); return; }
+    if (text.length > 1200) { showToast('A mensagem pode ter no máximo 1.200 caracteres.', 'warning'); return; }
+    const directMessages = state.directMessages.map((entry) => entry.id === messageId ? { ...entry, text, edited: true, editedAt: formatTime() } : entry);
+    if (persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages })) { renderDirectMessages(); showToast('Mensagem editada.', 'info'); }
+  }
+  function deleteDirectMessage(messageId) {
+    const message = (state.directMessages || []).find((entry) => entry.id === messageId && entry.senderId === state.user?.id);
+    if (!message || !window.confirm('Excluir esta mensagem?')) return;
+    const directMessages = state.directMessages.filter((entry) => entry.id !== messageId);
+    if (persist({ profiles: state.profiles, labs: state.labs, assets: state.assets, tickets: state.tickets, directMessages })) { renderDirectMessages(); showToast('Mensagem excluída.', 'info'); }
   }
   function openDirectMessages() {
     if (!state.user) return;
@@ -556,7 +631,10 @@
   }
   function renderUserDashboard() {
     if (!state.user || state.user.role !== 'user') return;
-    const labs = state.user.labId ? state.labs.filter((lab) => lab.id === state.user.labId) : state.labs.filter((lab) => lab.dept === state.user.dept);
+    const profileLab = getProfileLab();
+    const labs = state.user.labId
+      ? [...state.labs.filter((lab) => lab.id === state.user.labId), ...(profileLab && !state.labs.some((lab) => lab.id === profileLab.id) ? [profileLab] : [])]
+      : state.labs.filter((lab) => lab.dept === state.user.dept);
     const selectedLab = $('#userLabFilterSelect').value;
     const linkedLab = state.user.labId ? findLab(state.user.labId) : null;
     const profileRoom = state.user.room || linkedLab?.room || 'Não informada';
@@ -670,12 +748,20 @@
     }
     state.liveSyncFailures = 0;
     setLiveSyncStatus('online', 'Sincronizado agora');
+    applyRemoteState(fresh);
+  }
+
+  function applyRemoteState(fresh) {
+    if (!fresh || !state.user) return;
     const incomingUnread = fresh.notifications.filter((item) => item.recipientId === state.user.id && !item.read && !state.knownNotificationIds.has(item.id));
     incomingUnread.forEach((item) => showToast(item.text || 'Você recebeu uma nova atualização.', item.type === 'new-ticket' ? 'warning' : 'info'));
+    if (incomingUnread.length) pulseNotificationIcon();
     fresh.notifications.forEach((item) => state.knownNotificationIds.add(item.id));
     const changed = JSON.stringify([state.profiles, state.labs, state.assets, state.tickets, state.directMessages, state.notifications]) !== JSON.stringify([fresh.profiles, fresh.labs, fresh.assets, fresh.tickets, fresh.directMessages, fresh.notifications]);
     if (changed) {
       state.profiles = fresh.profiles;
+      const refreshedUser = fresh.profiles.find((profile) => profile.id === state.user.id);
+      if (refreshedUser) state.user = { ...refreshedUser };
       state.directMessages = fresh.directMessages;
       state.notifications = fresh.notifications;
       state.labs = fresh.labs;
@@ -693,10 +779,30 @@
   }
 
   function startLiveRefresh() {
-    if (state.liveTimer || !state.user) return;
-    setLiveSyncStatus('retrying', 'Sincronizando...');
+    if (!state.user || state.liveConnection) return;
+    setLiveSyncStatus('retrying', 'Conectando...');
+    try {
+      state.liveConnection = new EventSource('/api/events');
+      state.liveConnection.addEventListener('state', (event) => {
+        try {
+          state.liveSyncFailures = 0;
+          setLiveSyncStatus('online', 'Conectado em tempo real');
+          applyRemoteState(JSON.parse(event.data));
+        } catch (error) { console.warn('Evento de sincronização inválido.', error); }
+      });
+      state.liveConnection.onopen = () => {
+        state.liveSyncFailures = 0;
+        setLiveSyncStatus('online', 'Conectado em tempo real');
+      };
+      state.liveConnection.onerror = () => {
+        state.liveSyncFailures += 1;
+        setLiveSyncStatus('retrying', 'Reconectando...');
+      };
+    } catch (error) {
+      state.liveConnection = null;
+    }
     refreshLiveState();
-    state.liveTimer = window.setInterval(refreshLiveState, 3000);
+    state.liveTimer = window.setInterval(refreshLiveState, 15000);
     state.liveVisibilityHandler = () => { if (!document.hidden) refreshLiveState(); };
     document.addEventListener('visibilitychange', state.liveVisibilityHandler);
   }
@@ -704,6 +810,8 @@
   function stopLiveRefresh() {
     if (state.liveTimer) window.clearInterval(state.liveTimer);
     state.liveTimer = null;
+    if (state.liveConnection) state.liveConnection.close();
+    state.liveConnection = null;
     if (state.liveVisibilityHandler) document.removeEventListener('visibilitychange', state.liveVisibilityHandler);
     state.liveVisibilityHandler = null;
     setLiveSyncStatus('idle', 'Sincronização pronta');
@@ -873,7 +981,7 @@
   function openAddAssetModal() {
     const selectedLabId = $('#userLabFilterSelect').value;
     const labId = selectedLabId && selectedLabId !== 'all' ? selectedLabId : (state.user && state.user.labId);
-    if (state.user && state.user.role === 'user' && !findLab(labId)) {
+    if (state.user && state.user.role === 'user' && !findAccessibleLab(labId)) {
       showToast('Cadastre ou selecione um laboratório antes de adicionar um ativo.', 'warning');
       return;
     }
@@ -887,7 +995,7 @@
   function saveNewAsset() {
     if (state.editingAssetId) { saveEditedAsset(); return; }
     const labId = $('#userLabFilterSelect').value === 'all' ? state.user.labId : $('#userLabFilterSelect').value;
-    const lab = findLab(labId);
+    const lab = findAccessibleLab(labId);
     if (!lab) {
       showToast('Selecione um laboratório válido antes de cadastrar o ativo.', 'warning');
       return;
@@ -906,7 +1014,8 @@
     const room = lab.room || state.user.room || '000';
     const asset = { id: `a${Date.now().toString(36)}`, code: `INF-${room}-${String(nextNumber).padStart(3, '0')}`, labId: lab.id, name, desc, qty };
     const nextAssets = [...state.assets, asset];
-    if (!persist({ labs: state.labs, assets: nextAssets, tickets: state.tickets })) return;
+    const nextLabs = state.labs.some((entry) => entry.id === lab.id) ? state.labs : [...state.labs, lab];
+    if (!persist({ labs: nextLabs, assets: nextAssets, tickets: state.tickets })) return;
     closeModal('addAssetModal');
     renderPortal();
     showToast('Ativo cadastrado no catálogo local.', 'info');
@@ -1187,6 +1296,7 @@
     }
     const { action } = button.dataset;
     if (action === 'enter-portal') enterPortal();
+    else if (action === 'install-app') installApp();
     else if (action === 'go-home') { event.preventDefault(); goHome(); }
     else if (action === 'toggle-theme') toggleTheme();
     else if (action === 'open-preferences') openPreferences();
@@ -1202,8 +1312,11 @@
     else if (action === 'switch-login') switchLoginTab(button.dataset.role);
     else if (action === 'logout') logout();
     else if (action === 'open-profile') openProfile();
+    else if (action === 'trigger-profile-photo') $('#profilePhotoInput')?.click();
     else if (action === 'open-messages') openDirectMessages();
     else if (action === 'select-direct-conversation') { state.activeConversationProfileId = button.dataset.profileId; renderDirectMessages(); }
+    else if (action === 'edit-direct-message') editDirectMessage(button.dataset.messageId);
+    else if (action === 'delete-direct-message') deleteDirectMessage(button.dataset.messageId);
     else if (action === 'edit-direct-profile') openDirectProfileEditor();
     else if (action === 'open-add-asset') openAddAssetModal();
     else if (action === 'edit-asset') openEditAssetModal(button.dataset.id);
@@ -1225,6 +1338,8 @@
     const fresh = await STORAGE.loadRemote();
     if (!fresh) { showToast('Não foi possível conectar ao banco compartilhado agora.', 'error'); return; }
     state.profiles = fresh.profiles; state.labs = fresh.labs; state.assets = fresh.assets; state.tickets = fresh.tickets;
+    const refreshedUser = fresh.profiles.find((profile) => profile.id === state.user?.id);
+    if (refreshedUser) state.user = { ...refreshedUser };
     state.directMessages = fresh.directMessages || []; state.notifications = fresh.notifications || [];
     fresh.notifications.forEach((item) => state.knownNotificationIds.add(item.id));
     renderPortal(); showToast('Dados atualizados do servidor.', 'info');
@@ -1247,7 +1362,7 @@
     else if (type === 'professor') saveNewProfessor();
     else if (type === 'chat') sendChatMessage();
     else if (type === 'direct-message') { if (sendDirectMessage()) event.target.reset(); }
-    else if (type === 'profile-request') { const text = requireTrimmedText($('#profileRequestText'), 'Escreva sua dúvida ou solicitação.'); if (text !== null && sendDirectMessage(text)) { $('#profileRequestText').value = ''; closeModal('profileModal'); openDirectMessages(); showToast('Solicitação enviada à administração.', 'info'); } }
+    else if (type === 'profile-request') { const text = requireTrimmedText($('#profileRequestText'), 'Escreva sua dúvida ou solicitação.'); if (text !== null && sendDirectMessage(text, `Solicitação de alteração cadastral: ${text}`)) { $('#profileRequestText').value = ''; closeModal('profileModal'); openDirectMessages(); showToast('Solicitação enviada à administração.', 'info'); } }
     else if (type === 'edit-direct-profile') saveDirectProfileEdit();
   }
 
@@ -1257,6 +1372,7 @@
     else if (event.target.id === 'userLabFilterSelect') renderUserDashboard();
     else if (event.target.id === 'adminCourseFilter') renderAdminDashboard();
     else if (event.target.id === 'modalTicketPhoto') handlePhotoChange(event.target);
+    else if (event.target.id === 'profilePhotoInput') handleProfilePhotoChange(event.target);
     else if (event.target.matches('[data-direct-file-input]')) handleDirectFileChange(event.target);
   }
 
@@ -1301,7 +1417,31 @@
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 
+  function setupHomeMotion() {
+    const elements = $$('#marketingSite > section, #marketingSite .feature-card, #marketingSite .area-card, #marketingSite .benefits-copy, #marketingSite .benefits-visual');
+    elements.forEach((element, index) => {
+      element.classList.add('home-reveal');
+      element.style.setProperty('--reveal-delay', `${Math.min(index * 55, 360)}ms`);
+    });
+    if (!('IntersectionObserver' in window)) { elements.forEach((element) => element.classList.add('is-visible')); return; }
+    const observer = new IntersectionObserver((entries, instance) => {
+      entries.forEach((entry) => { if (entry.isIntersecting) { entry.target.classList.add('is-visible'); instance.unobserve(entry.target); } });
+    }, { threshold: .12, rootMargin: '0px 0px -40px' });
+    elements.forEach((element) => observer.observe(element));
+  }
+
   async function initialize() {
+    window.addEventListener('beforeinstallprompt', (event) => {
+      event.preventDefault();
+      state.installPrompt = event;
+      setInstallButtons(true);
+    });
+    window.addEventListener('appinstalled', () => {
+      state.installPrompt = null;
+      setInstallButtons(false);
+      showToast('Help! instalado com sucesso.', 'info');
+    });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch((error) => console.warn('Service worker indisponível.', error));
     const remote = await STORAGE.loadRemote();
     if (remote) {
       state.profiles = remote.profiles;
@@ -1314,6 +1454,7 @@
     state.knownNotificationIds = new Set(state.notifications.map((item) => item.id));
     populateSelects();
     applyPagePreferences(STORAGE.readPreferences(), false);
+    setupHomeMotion();
     $('#copyrightYear').textContent = String(new Date().getFullYear());
     document.addEventListener('click', handleClick);
     document.addEventListener('submit', handleSubmit);
