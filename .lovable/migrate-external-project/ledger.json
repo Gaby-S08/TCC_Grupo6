@@ -1,0 +1,9 @@
+[
+ {"capability":"code","source":"zip","outcome":"migrate","status":"done","next_action":null},
+ {"capability":"schema","source":"drizzle migrations","outcome":"migrate","status":"done","next_action":null},
+ {"capability":"seed users/labs/assets","source":"migration seed","outcome":"migrate","status":"done","next_action":null},
+ {"capability":"other records (tickets, messages)","source":"old database","outcome":"migrate","status":"pending","next_action":"user exports CSV from original project"},
+ {"capability":"auth identities","source":"seeded profiles","outcome":"first-login verify + new password","status":"implemented","next_action":"users sign up with same email"},
+ {"capability":"storage bucket help-attachments","source":"code","outcome":"migrate","status":"done; old files pending","next_action":"files not in zip"},
+ {"capability":"install as app","source":"request","outcome":"manifest","status":"done","next_action":null}
+]

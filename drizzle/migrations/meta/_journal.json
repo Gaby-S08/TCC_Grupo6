@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1795778924065,
+      "tag": "0000_init_help_inventory_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795781237463,
+      "tag": "0001_add_ticket_priority_and_realtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795789869926,
+      "tag": "0002_noop_after_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795790050492,
+      "tag": "0003_tighten_attachments_notifications_assets",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795790940691,
+      "tag": "0004_bind_attachment_reads_to_caller",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+HELP! — USUARIOS CADASTRADOS
+===========================
+
+Administrador (use o botao Administrador na tela de login)
+  Guilherme dos Santos — guilherme.santos@gmail.com — Senha: HelpLab!221340
+
+Professores (use o botao Funcionario / Professor na tela de login)
+  Rafael Conceicao (Sala 166) — rafael.conceicao@gmail.com — Senha: HelpLab!123456
+  Lucas Oliveira (Sala 221)   — lucas.oliveira@gmail.com   — Senha: HelpLab!246810
+  Maria Julia (Sala 094)      — maria.ju@gmail.com         — Senha: HelpLab!369122
+  Luana Silva (Sala 265)      — luana.silva@gmail.com      — Senha: HelpLab!481216
+
+Regras de acesso
+  - So essas cinco contas conseguem entrar. Nao ha cadastro de novas contas.
+  - A senha e conferida de verdade para cada e-mail; senha errada e recusada.
+  - O botao de perfil so escolhe a aparencia da tela: ele nao libera entrada sozinho.
+  - Entrada tambem pelo Google, para as contas que ja tem conta Google cadastrada.
+
+Como instalar pelo navegador
+  - Celular: abra o link e use "Adicionar a tela inicial" (Android) ou
+    "Compartilhar > Adicionar a Tela de Inicial" (iPhone).
+  - Computador: no Chrome/Edge, clique no icone de instalacao na barra de endereco.
